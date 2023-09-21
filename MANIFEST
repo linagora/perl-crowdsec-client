@@ -1,0 +1,7 @@
+Changes
+lib/CrowdSec/Client.pm
+LICENSE
+Makefile.PL
+MANIFEST
+README
+t/CrowdSec-Client.t
