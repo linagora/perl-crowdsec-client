@@ -10,6 +10,7 @@ use POSIX "strftime";
 
 our $VERSION = '0.02';
 
+# Default alert template
 our %DEFAULTS = (
     duration  => '4h',
     labels    => undef,
@@ -20,18 +21,18 @@ our %DEFAULTS = (
     type      => 'ban',
 );
 
+# Watcher accessors
 has machineId => ( is => 'ro' );
-
-has password => ( is => 'ro' );
-
-has token => ( is => 'rw' );
-
-has tokenVal => ( is => 'rw' );
-
+has password  => ( is => 'ro' );
+has token     => ( is => 'rw' );
+has tokenVal  => ( is => 'rw' );
 has strictSsl => ( is => 'ro', default => 1, );
+has baseUrl   => ( is => 'ro' );
 
-has baseUrl => ( is => 'ro' );
+# Bouncer accessors
+has apiKey => ( is => 'ro' );
 
+# Common accessors
 has userAgent => (
     is      => 'ro',
     default => sub {
@@ -65,6 +66,7 @@ sub login {
     return if $error;
     my $request = POST(
         $self->baseUrl . '/v1/watchers/login',
+        Accept       => 'application/json',
         Content_Type => 'application/json',
         Content      => JSON::to_json(
             {
@@ -78,13 +80,12 @@ sub login {
     if ( $response->is_success ) {
         eval {
             my $tmp = JSON::from_json( $response->content );
-            use Data::Dumper;
             $self->token( $tmp->{token} );
             $self->tokenVal( str2time( $tmp->{expire} ) );
         };
         if ($@) {
             $self->error("Bad response content from CrowdSec server: $@");
-            return 0;
+            return;
         }
         if ( !$self->token and !$self->tokenVal ) {
             $self->error(
@@ -96,30 +97,26 @@ sub login {
     else {
         $self->error(
             "Bad response from CrowdSec server: " . $response->status_line );
-        return 0;
+        return;
     }
 }
 
 sub banIp {
-    my ( $self, $params ) = @_;
-    unless ( $params and ref $params ) {
-        $self->error("parameter should be a hashref");
-        return 0;
-    }
-    unless ( $params->{ip} ) {
-        $self->error("Missing IP");
-        return 0;
+    my ( $self, $ip, %params ) = @_;
+    unless ( $ip ) {
+        $self->error('Usage: banIp($ip, \%options)');
+        return;
     }
     if ( $self->autoLogin ) {
         unless ( $self->login ) {
-            return 0;
+            return;
         }
     }
     unless ( $self->token ) {
         $self->error("No valid token");
-        return 0;
+        return;
     }
-    my %prm      = ( %DEFAULTS, %$params );
+    my %prm = ( %DEFAULTS, %params );
     $prm{simulated} = $prm{simulated} ? JSON::true : JSON::false;
     my $stamp    = strftime "%Y-%m-%dT%H:%M:%SZ", gmtime(time);
     my $decision = [
@@ -133,7 +130,7 @@ sub banIp {
                     scenario => $prm{scenario},
                     scope    => 'Ip',
                     type     => $prm{type},
-                    value    => $prm{ip}
+                    value    => $ip,
                 }
             ],
             events           => [],
@@ -146,9 +143,9 @@ sub banIp {
             scenario_version => '',
             simulated        => $prm{simulated},
             source           => {
-                ip    => $prm{ip},
+                ip    => $ip,
                 scope => 'Ip',
-                value => $prm{ip},
+                value => $ip,
             },
             start_at => $stamp,
             stop_at  => $stamp,
@@ -167,14 +164,54 @@ sub banIp {
         if ($@) {
             $self->error(
                 "CrowdSec didn't return an array: " . $response->content );
-            return 0;
+            return;
         }
         return $res;
     }
     else {
         print "Échec de la requête : " . $response->status_line . "\n";
-        return 0;
+        return;
     }
+}
+
+sub testIp {
+    my ( $self, $ip ) = @_;
+    my $error = 0;;
+    foreach my $k (qw(apiKey baseUrl)) {
+        unless ( $self->{$k} ) {
+            $self->error("Missing parameter: $k");
+            $error++;
+        }
+    }
+    unless ($ip) {
+        $self->error('Missing IP');
+        $error++;
+    }
+    return (0, $self->error) if $error;
+    my $response = $self->userAgent->get(
+        $self->baseUrl . "/v1/decisions?ip=$ip",
+        Accept      => 'application/json',
+        'X-Api-Key' => $self->apiKey,
+    );
+    if ( $response->is_success ) {
+        my @decisions;
+        return 0 if !$response->content or $response->content eq 'null';
+        eval {
+            my $tmp = JSON::from_json( $response->content );
+            @decisions = @$tmp;
+        };
+        if ($@) {
+            $self->error("Bad response content from CrowdSec server: $@");
+            return (0, $self->error);
+        }
+        return 0 unless @decisions;
+        foreach my $decision (@decisions) {
+            if ( $decision->{type} and $decision->{type} eq 'ban' ) {
+                return 1;
+            }
+        }
+        return 0;
+    };
 }
 
 sub tokenIsvalid {
@@ -191,6 +228,17 @@ CrowdSec::Client - CrowdSec client
 
 =head1 SYNOPSIS
 
+  # Bouncer
+  use CrowdSec::Client;
+  my $client = CrowdSec::Client->new({
+    apiKey => "myApiKey",
+    baseUrl   => "http://127.0.0.1:8080",
+  });
+  if ( $client->testIp('1.2.3.4') ) {
+    print STDERR "IP banned by crowdsec\n";
+  }
+
+  # Watcher
   use CrowdSec::Client;
   my $client = CrowdSec::Client->new({
     machineId => "myid",
@@ -198,15 +246,14 @@ CrowdSec::Client - CrowdSec client
     baseUrl   => "http://127.0.0.1:8080",
     autoLogin => 1;
   });
-  $client->banIp({
-    ip       => '1.2.3.4',
-    duration => '5h',            # default 4h
-    reason   => 'Ban by my app', # default: 'Banned by CrowdSec::Client'
-  }) or die( $client->error );
+  $client->banIp('2.3.4.5') or die( $client->error );
+  $client->banIp('1.2.3.4', duration => '5h', reason => 'Ban by my app')
+    or die( $client->error );
 
 =head1 DESCRIPTION
 
-CrowdSec::Client is a simple CrowdSec Watcher. It permits to ban an IP.
+CrowdSec::Client is a simple CrowdSec Client. It permits one to query Crowdsec
+database or to ban an IP.
 
 =head2 Constructor
 
@@ -214,12 +261,11 @@ CrowdSec::Client requires a hashref as argument with the following keys:
 
 =over
 
-=item B<machineId> I<(required)>: the watcher identifier given by Crowdsec
-I<(see L</Enrollment>)>.
+=item B<Common parameters>
 
-=item B<password> I<(required)>: the watcher password
+=over
 
-=item B<baseUrl> I<(required)>: the base URL to connect to local CrowdSec
+=item B<baseUrl> I<(required) to ban>: the base URL to connect to local CrowdSec
 server. Example: B<http://localhost:8080>.
 
 =item B<userAgent> I<(optional)>: a L<LWP::UserAgent> object. If noone is
@@ -233,19 +279,38 @@ set, the internal LWP::UserAgent will ignore SSL errors.
 
 =back
 
+=item B<Watcher parameters>
+
+=over
+
+=item B<machineId> I<(required)>: the watcher identifier given by Crowdsec
+I<(see L</Enrollment>)>.
+
+=item B<password> I<(required)>: the watcher password
+
+=back
+
+=item B<Bouncer parameters>
+
+=over
+
+=item B<apiKey> I<(required)>: the Crowdsec API key
+
+=back
+
+=back
+
 =head2 Methods
 
 =head3 banIp()
 
 banIp adds the given IP into decisions. Usage:
 
-  $client->banIp( { %parameters } );
+  $client->banIp( $ip, %parameters );
 
 Parameters:
 
 =over
-
-=item B<ip> I<(required)>: the IP address to ban
 
 =item B<duration> I<(default: 4h)>: the duration of the decision
 
@@ -255,13 +320,25 @@ Parameters:
 
 =item B<scenario> I<(default: "Banned by CrowdSec::Client"))>
 
-=item B<simulated> I<(default: 0)>: if set to 1, the flag simulated is added
+=item B<simulated> I<(default: 0)>: if set to 1, the flag "simulated" is added
 
 =item B<type> I<(default: "ban")>
 
 =back
 
 =head1 Enrollment
+
+=head2 Bouncer
+
+To get a Crowdsec API key, you can use:
+
+  $ sudo cscli bouncers add myBouncerName
+
+=head2 Watcher
+
+To get a Watcher password, you can use:
+
+  $ sudo cscli machines add MyId --password myPassword
 
 =head1 SEE ALSO
 
