@@ -4,4 +4,5 @@ LICENSE
 Makefile.PL
 MANIFEST
 README
+README.md
 t/CrowdSec-Client.t
