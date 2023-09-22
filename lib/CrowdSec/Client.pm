@@ -8,7 +8,7 @@ use LWP::UserAgent;
 use Moo;
 use POSIX "strftime";
 
-our $VERSION = '0.02';
+our $VERSION = '0.03';
 
 # Default alert template
 our %DEFAULTS = (
