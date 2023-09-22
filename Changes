@@ -1,6 +1,7 @@
 Revision history for Perl extension CrowdSec::Client.
 
-0.01  Thu Sep 21 20:14:57 2023
-	- original version; created by h2xs 1.23 with options
-		-aXn CrowdSec::Client
+0.02  Fri Sep 22 07:28:35 2023
+	- Fix dependencies
 
+0.01  Thu Sep 21 20:14:57 2023
+	- original version; created by h2xs
